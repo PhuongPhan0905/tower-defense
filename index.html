@@ -1,0 +1,425 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Tower Defense</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 16px;
+            background: #1e2a1e;
+            color: #f0f0e8;
+            font-family: system-ui, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        h1 {
+            margin: 0 0 2px;
+            font-size: 1.4rem;
+        }
+        .instructions {
+            margin: 0 0 10px;
+            text-align: center;
+            color: #c8d0c0;
+        }
+        /* The map is 1200×750 game pixels; it is shown smaller when the window can't fit it. */
+        .game {
+            width: 1200px;
+            max-width: 100%;
+        }
+        /*
+         * On wide screens: towers in a column on the left, the map in the middle, and upgrades, the next wave, and
+         * Start Wave on the right. The map shrinks to fit the window's height too, so everything fits without
+         * scrolling. 1.6 is the map's width-to-height ratio.
+         */
+        @media (min-width: 1080px) {
+            .game {
+                width: auto;
+                display: grid;
+                grid-template-columns: 150px min(1200px, calc(100vw - 460px), calc((100vh - 190px) * 1.6)) 230px;
+                column-gap: 12px;
+            }
+            .status, .message { grid-column: 1 / -1; }
+            .tower-picker {
+                flex-direction: column;
+                flex-wrap: nowrap;
+                margin: 0;
+                overflow-y: auto;
+            }
+            .side { margin-top: 0; }
+        }
+        .status {
+            display: flex;
+            gap: 24px;
+            padding: 8px 12px;
+            margin-bottom: 8px;
+            background: #2c3b2c;
+            border-radius: 8px;
+            font-size: 1.15rem;
+            font-weight: bold;
+        }
+        .status { align-items: center; flex-wrap: wrap; }
+        .toggles {
+            display: flex;
+            gap: 8px;
+            margin-left: auto;
+        }
+        .toggle {
+            padding: 4px 10px;
+            font-size: 0.9rem;
+            font-weight: normal;
+            background: transparent;
+            border: 1px solid #667;
+        }
+        .toggle:hover { background: #3a4d3a; }
+        /* The map, with ability icons in its bottom-left corner. */
+        .map { position: relative; }
+        .ability-bar {
+            position: absolute;
+            left: 4px;
+            bottom: 4px;
+            display: flex;
+            gap: 4px;
+        }
+        /* Each unlocked ability is just its picture, no box. It pops up when a tower unlocks it, glows gold when
+           ready, and turns grey with the time left on it while recharging. */
+        .ability-icon {
+            position: relative;
+            width: 36px;
+            height: 36px;
+            padding: 0;
+            background: none;
+            border: none;
+            animation: pop-up 0.25s ease-out;
+        }
+        @keyframes pop-up {
+            from { transform: scale(0.2); opacity: 0; }
+            to { transform: scale(1); opacity: 1; }
+        }
+        .ability-icon img {
+            display: block;
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+            image-rendering: pixelated;
+        }
+        .ability-icon.ready img { filter: drop-shadow(0 0 3px #ffd54f) drop-shadow(0 0 2px #ffd54f); }
+        .ability-icon.ready:hover { transform: scale(1.1); }
+        .ability-icon.targeting img { filter: drop-shadow(0 0 4px #fff3b0) drop-shadow(0 0 6px #ffd54f); }
+        .ability-icon.recharging { cursor: default; }
+        .ability-icon.recharging img { filter: grayscale(1) brightness(0.55); }
+        .cooldown-time {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            font-size: 0.75rem;
+            text-shadow: 0 1px 2px #000, 0 0 3px #000;
+        }
+        .ability-icon kbd {
+            position: absolute;
+            right: -3px;
+            bottom: -3px;
+            padding: 0 2px;
+            font-size: 0.6rem;
+            background: rgba(0, 0, 0, 0.7);
+        }
+        .toggle.on {
+            background: #2e7d32;
+            border-color: #66bb6a;
+            font-weight: bold;
+        }
+        .stats {
+            display: grid;
+            grid-template-columns: auto 1fr;
+            gap: 2px 10px;
+            margin: 0;
+            padding: 8px 10px;
+            background: #243224;
+            border-radius: 8px;
+            font-size: 0.85rem;
+        }
+        .stats dt { color: #c8d0c0; }
+        .stats dd { margin: 0; font-weight: bold; text-align: right; }
+        /* Stats raised by a nearby Monk's Inner Light, in the gold of his spirit arms. */
+        .stats .boosted { color: #ffd54f; }
+        /* Towers stunned or cursed by enemies. */
+        .stats .weakened { color: #ff8a80; }
+        #lives { color: #ff8a80; }
+        #gold { color: #ffd54f; }
+        canvas {
+            display: block;
+            width: 100%;
+            height: auto;
+            border-radius: 8px;
+            cursor: crosshair;
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+        }
+        /* The tower list: on narrow screens a row above the map, on wide ones a column to its left. */
+        .tower-picker {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            margin-bottom: 10px;
+        }
+        /* Upgrades (when a tower is selected) or the next wave, with Start Wave at the bottom. */
+        .side {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            margin-top: 10px;
+        }
+        #start-wave { margin-top: auto; }
+        .wave-preview {
+            padding: 8px 10px;
+            background: #2c3b2c;
+            border-radius: 8px;
+        }
+        .wave-preview h2 {
+            margin: 0 0 6px;
+            font-size: 1rem;
+        }
+        .wave-preview ul {
+            list-style: none;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+        .enemy-row {
+            display: grid;
+            grid-template-columns: 14px 1fr auto;
+            column-gap: 6px;
+            align-items: center;
+            font-size: 0.9rem;
+        }
+        .enemy-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            border: 1px solid rgba(0, 0, 0, 0.5);
+        }
+        .enemy-name { font-weight: bold; }
+        .enemy-gold { color: #ffd54f; font-size: 0.85rem; white-space: nowrap; }
+        .enemy-trait {
+            grid-column: 2 / -1;
+            font-size: 0.78rem;
+            color: #c8d0c0;
+        }
+        .wave-total {
+            margin: 8px 0 0;
+            font-size: 0.85rem;
+            color: #ffd54f;
+        }
+        .wave-weather {
+            margin: 6px 0 0;
+            font-size: 0.85rem;
+            color: #bfe3ff;
+        }
+        /* First-game tips across the top of the map. */
+        .tips {
+            position: absolute;
+            top: 8px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            max-width: 90%;
+            padding: 8px 12px;
+            background: rgba(20, 28, 20, 0.92);
+            border: 2px solid #ffd54f;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+            font-size: 0.95rem;
+        }
+        .tips .tip-step { color: #ffd54f; font-weight: bold; white-space: nowrap; }
+        .tips button {
+            padding: 2px 8px;
+            font-size: 0.8rem;
+            background: transparent;
+            border: 1px solid #667;
+        }
+        button {
+            font: inherit;
+            color: inherit;
+            border-radius: 8px;
+            cursor: pointer;
+        }
+        /* Slim tower buttons: picture, name, and cost; the description shows when you point at one. */
+        .tower-button {
+            display: grid;
+            grid-template-columns: auto 1fr;
+            column-gap: 8px;
+            align-items: center;
+            text-align: left;
+            padding: 6px 8px;
+            background: #2c3b2c;
+            border: 2px solid transparent;
+        }
+        .tower-button:hover { background: #3a4d3a; }
+        .tower-button.selected { border-color: #ffd54f; background: #3a4d3a; }
+        .tower-button.unaffordable { opacity: 0.5; }
+        .swatch {
+            grid-row: span 2;
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+        }
+        .swatch.square { border-radius: 4px; }
+        /* Pixel art: show the drawing a bit larger, with sharp pixels instead of blurred ones. */
+        .swatch.sprite {
+            width: 32px;
+            height: 32px;
+            margin: -4px;
+            border-radius: 0;
+            image-rendering: pixelated;
+            /* Wide art (the Lancer on his horse) is cropped to its middle instead of squashed into the square. */
+            object-fit: cover;
+        }
+        .tower-name { font-weight: bold; }
+        .tower-cost { color: #ffd54f; font-size: 0.9rem; }
+        kbd {
+            font-size: 0.75rem;
+            padding: 0 4px;
+            border: 1px solid #889;
+            border-radius: 3px;
+            color: #c8d0c0;
+        }
+        #start-wave {
+            padding: 12px 20px;
+            min-width: 180px;
+            font-weight: bold;
+            font-size: 1.1rem;
+            background: #d35400;
+            border: none;
+        }
+        #start-wave:hover:not(:disabled) { background: #e8650a; }
+        #start-wave:disabled {
+            background: #4a4a4a;
+            color: #b0b0b0;
+            cursor: default;
+        }
+        [hidden] { display: none !important; }
+        .upgrade-panel {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            flex: 1;
+        }
+        .panel-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+        .branch {
+            padding: 8px 10px;
+            background: #2c3b2c;
+            border-radius: 8px;
+        }
+        .branch p { margin: 2px 0; }
+        .branch.unavailable { opacity: 0.6; }
+        .branch-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .branch-name { font-weight: bold; }
+        .pips { display: flex; gap: 3px; }
+        .pip {
+            width: 12px;
+            height: 12px;
+            border-radius: 3px;
+            border: 1px solid #889;
+        }
+        .branch-0 .pip.filled { background: #ffd54f; border-color: #ffd54f; }
+        .branch-1 .pip.filled { background: #80deea; border-color: #80deea; }
+        .upgrade-name { font-weight: bold; font-size: 0.95rem; }
+        .upgrade-description, .branch-status { font-size: 0.85rem; color: #c8d0c0; }
+        .lock-warning { font-size: 0.8rem; color: #ffab91; }
+        .buy-button {
+            width: 100%;
+            margin-top: 6px;
+            padding: 6px;
+            font-weight: bold;
+            background: #2e7d32;
+            border: none;
+        }
+        .buy-button:hover:not(:disabled) { background: #388e3c; }
+        .buy-button:disabled {
+            background: #4a4a4a;
+            color: #b0b0b0;
+            cursor: default;
+        }
+        .sell-button {
+            padding: 6px;
+            font-weight: bold;
+            background: #8e2b20;
+            border: none;
+        }
+        .sell-button:hover { background: #a93226; }
+        /* The Heavenly Tribulation offer: gold and violet, like heavenly lightning. */
+        .tribulation-button {
+            padding: 8px;
+            font-weight: bold;
+            color: #2a1640;
+            background: linear-gradient(90deg, #f2c84b, #c9a0ff);
+            border: none;
+        }
+        .tribulation-button:hover { filter: brightness(1.1); }
+        .tribulation-note {
+            margin: 0;
+            font-size: 0.85rem;
+            color: #e6c8ff;
+        }
+        .close-button {
+            padding: 6px;
+            background: transparent;
+            border: 1px solid #667;
+            font-size: 0.85rem;
+        }
+        .close-button:hover { background: #2c3b2c; }
+        .message {
+            min-height: 1.4em;
+            margin: 8px 0 0;
+            color: #ffcc80;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+<h1>Tower Defense</h1>
+<p class="instructions">Pick a tower, click the grass to place it, then press <strong>Start Wave</strong>. Click a placed tower to see its stats and upgrade it (<kbd>Q</kbd> / <kbd>W</kbd>).</p>
+<div class="game">
+    <div class="status">
+        <span id="lives" title="Lives"></span>
+        <span id="gold" title="Gold"></span>
+        <span id="wave"></span>
+        <span class="toggles">
+            <button id="gold-popups-toggle" class="toggle" type="button" title="Show the gold each defeated enemy drops"></button>
+            <button id="auto-start-toggle" class="toggle" type="button" title="Start each wave automatically"></button>
+            <button id="speed-toggle" class="toggle" type="button" title="Play at double speed"></button>
+        </span>
+    </div>
+    <div id="tower-picker" class="tower-picker" aria-label="Towers"></div>
+    <div class="map">
+        <canvas id="game" width="1200" height="750"></canvas>
+        <div id="tips" class="tips" aria-live="polite" hidden></div>
+        <div id="ability-bar" class="ability-bar" aria-label="Abilities"></div>
+    </div>
+    <div class="side">
+        <div id="upgrade-panel" class="upgrade-panel" aria-label="Upgrades" hidden></div>
+        <div id="wave-preview" class="wave-preview" aria-label="Next wave"></div>
+        <button id="start-wave" type="button">Start Wave 1</button>
+    </div>
+    <p id="message" class="message" aria-live="polite"></p>
+</div>
+<script src="tower-defense.js"></script>
+</body>
+</html>
